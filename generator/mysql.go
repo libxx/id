@@ -82,8 +82,18 @@ type mysqlEngine struct {
 }
 
 func (m *mysqlEngine) Next() (id int64, err error) {
+	ids, err := m.NextN(1)
+	if err != nil {
+		return
+	}
+	id = ids[0]
+	return
+}
+
+func (m *mysqlEngine) NextN(n int64) (ids []int64, err error) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
+	ids = make([]int64, 0, n)
 	if m.cur == m.max {
 		m.cur, m.max, err = m.increment(m.skip)
 		if err != nil {
@@ -91,8 +101,11 @@ func (m *mysqlEngine) Next() (id int64, err error) {
 		}
 	}
 
-	m.cur++
-	return m.cur, nil
+	for i := int64(0); i < n; i++ {
+		m.cur++
+		ids = append(ids, m.cur)
+	}
+	return ids, nil
 }
 
 func (m *mysqlEngine) Current() (int64, error) {
