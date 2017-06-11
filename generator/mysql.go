@@ -4,9 +4,10 @@ import (
 	"database/sql"
 	"fmt"
 	"sync"
+	"time"
 
 	_ "github.com/go-sql-driver/mysql"
-	"time"
+	"github.com/libxx/id/logging"
 )
 
 const (
@@ -28,7 +29,7 @@ type MysqlConfig struct {
 	TableName string
 }
 
-func InitMysqlEngine(config MysqlConfig) (err error) {
+func InitMysqlGenerator(config MysqlConfig) (err error) {
 	db, err := sql.Open("mysql", config.Dsn)
 	if err != nil {
 		return
@@ -37,12 +38,7 @@ func InitMysqlEngine(config MysqlConfig) (err error) {
 	return
 }
 
-func NewMysqlEngine(config MysqlConfig, key string, skip int64) (engine Engine, err error) {
-	if skip <= 0 {
-		err = fmt.Errorf("invalid skip: %d", skip)
-		return
-	}
-
+func NewMysqlGenerator(config MysqlConfig, skip int64, logFunc logging.LogFunc) (generator Generator, err error) {
 	db, err := sql.Open("mysql", config.Dsn)
 	if err != nil {
 		return
@@ -52,15 +48,86 @@ func NewMysqlEngine(config MysqlConfig, key string, skip int64) (engine Engine, 
 		return
 	}
 
-	mysqlEngine := new(mysqlEngine)
-	mysqlEngine.db = db
-	mysqlEngine.config = config
-	mysqlEngine.selectSQL = fmt.Sprintf(selectSQL, config.TableName)
-	mysqlEngine.insertSQL = fmt.Sprintf(insertSQL, config.TableName)
-	mysqlEngine.updateSQL = fmt.Sprintf(updateSQL, config.TableName)
+	g := new(MysqlGenerator)
+	g.sourceMap = make(map[string]*mysqlRowBasedEngine)
+	g.db = db
+	g.config = config
+	g.skip = skip
+	g.logFunc = logging.NewWrapperLogFunc(logFunc)
+	generator = g
+	return
+}
+
+type MysqlGenerator struct {
+	sync.RWMutex
+	sourceMap map[string]*mysqlRowBasedEngine
+	db        *sql.DB
+	config    MysqlConfig
+	skip      int64
+	logFunc   logging.LogFunc
+}
+
+func (m *MysqlGenerator) EnableKeys(keys []string) (err error) {
+	data := make(map[string]*mysqlRowBasedEngine, len(keys))
+	for _, key := range keys {
+		data[key], err = newMysqlRowBasedEngine(m, key, m.skip, m.logFunc)
+		if err != nil {
+			return
+		}
+	}
+	m.Lock()
+	defer m.Unlock()
+
+	m.sourceMap = data
+	return
+}
+
+func (m *MysqlGenerator) Next(key string) (id int64, err error) {
+	engine, err := m.rowBasedEngine(key)
+	if err != nil {
+		return
+	}
+	return engine.next()
+}
+
+func (m *MysqlGenerator) Current(key string) (id int64, err error) {
+	engine, err := m.rowBasedEngine(key)
+	if err != nil {
+		return
+	}
+	return engine.current()
+}
+
+func (m *MysqlGenerator) Close() error {
+	return m.db.Close()
+}
+
+func (m *MysqlGenerator) rowBasedEngine(key string) (engine *mysqlRowBasedEngine, err error) {
+	m.RLock()
+	defer m.RUnlock()
+	engine, exist := m.sourceMap[key]
+	if !exist {
+		err = ErrKeyDoesNotExist
+	}
+	return
+}
+
+func newMysqlRowBasedEngine(generator *MysqlGenerator, key string, skip int64, logFunc logging.LogFunc) (engine *mysqlRowBasedEngine, err error) {
+	if skip <= 0 {
+		err = fmt.Errorf("invalid skip: %d", skip)
+		return
+	}
+
+	mysqlEngine := new(mysqlRowBasedEngine)
+	mysqlEngine.generator = generator
+	mysqlEngine.selectSQL = fmt.Sprintf(selectSQL, generator.config.TableName)
+	mysqlEngine.insertSQL = fmt.Sprintf(insertSQL, generator.config.TableName)
+	mysqlEngine.updateSQL = fmt.Sprintf(updateSQL, generator.config.TableName)
 	mysqlEngine.skip = skip
 	mysqlEngine.key = key
-	mysqlEngine.cur, mysqlEngine.max, err = mysqlEngine.increment(skip)
+	mysqlEngine.logFunc = logFunc
+	logFunc(fmt.Sprintf("initialize counter for key: \"%s\"", key))
+	mysqlEngine.cur, mysqlEngine.max, err = mysqlEngine.increase(skip)
 	if err != nil {
 		return
 	}
@@ -68,9 +135,8 @@ func NewMysqlEngine(config MysqlConfig, key string, skip int64) (engine Engine, 
 	return mysqlEngine, err
 }
 
-type mysqlEngine struct {
-	db        *sql.DB
-	config    MysqlConfig
+type mysqlRowBasedEngine struct {
+	generator *MysqlGenerator
 	selectSQL string
 	updateSQL string
 	insertSQL string
@@ -79,47 +145,37 @@ type mysqlEngine struct {
 	max       int64
 	cur       int64
 	mutex     sync.Mutex
+	logFunc   logging.LogFunc
 }
 
-func (m *mysqlEngine) Next() (id int64, err error) {
-	ids, err := m.NextN(1)
-	if err != nil {
-		return
-	}
-	id = ids[0]
-	return
-}
-
-func (m *mysqlEngine) NextN(n int64) (ids []int64, err error) {
+func (m *mysqlRowBasedEngine) next() (id int64, err error) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
-	ids = make([]int64, 0, n)
 	if m.cur == m.max {
-		m.cur, m.max, err = m.increment(m.skip)
+		m.logFunc(fmt.Sprintf("increase counter for key: \"%s\"", m.key))
+		m.cur, m.max, err = m.increase(m.skip)
 		if err != nil {
 			return
 		}
 	}
-
-	for i := int64(0); i < n; i++ {
-		m.cur++
-		ids = append(ids, m.cur)
-	}
-	return ids, nil
+	m.cur++
+	return m.cur, nil
 }
 
-func (m *mysqlEngine) Current() (int64, error) {
+func (m *mysqlRowBasedEngine) current() (int64, error) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 	return m.cur, nil
 }
 
-func (m *mysqlEngine) Close() error {
-	return m.db.Close()
-}
-
-func (m *mysqlEngine) increment(delta int64) (cur, max int64, err error) {
-	tx, err := m.db.Begin()
+func (m *mysqlRowBasedEngine) increase(delta int64) (cur, max int64, err error) {
+	m.logFunc(fmt.Sprintf("before increasing counter for key: \"%s\", current: %d.", m.key, m.cur))
+	defer func() {
+		if err == nil {
+			m.logFunc(fmt.Sprintf("after increasing counter for key: \"%s\", current: %d.", m.key, cur))
+		}
+	}()
+	tx, err := m.generator.db.Begin()
 	defer func() {
 		if err != nil {
 			newErr := tx.Rollback()
@@ -133,12 +189,12 @@ func (m *mysqlEngine) increment(delta int64) (cur, max int64, err error) {
 	if err != nil {
 		return
 	}
-	err = m.db.QueryRow(m.selectSQL, m.key).Scan(&cur)
+	err = m.generator.db.QueryRow(m.selectSQL, m.key).Scan(&cur)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			var res sql.Result
 			max += m.skip
-			res, err = m.db.Exec(m.insertSQL, m.key, max, time.Now().Unix())
+			res, err = m.generator.db.Exec(m.insertSQL, m.key, max, time.Now().Unix())
 			var cnt int64
 			cnt, err = res.RowsAffected()
 			if err != nil {
@@ -153,7 +209,7 @@ func (m *mysqlEngine) increment(delta int64) (cur, max int64, err error) {
 	}
 
 	max = cur + delta
-	res, err := m.db.Exec(m.updateSQL, max, time.Now().Unix(), m.key)
+	res, err := m.generator.db.Exec(m.updateSQL, max, time.Now().Unix(), m.key)
 	if err != nil {
 		return
 	}

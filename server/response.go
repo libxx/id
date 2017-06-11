@@ -2,7 +2,7 @@ package server
 
 import "strconv"
 
-func NewStatusReply(reply string) []byte {
+func NewStringReply(reply string) []byte {
 	return newSimpleReply('+', reply)
 }
 

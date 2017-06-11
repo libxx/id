@@ -1,10 +1,15 @@
 package generator
 
-import "io"
+import (
+	"io"
+	"errors"
+)
 
-type Engine interface {
+var ErrKeyDoesNotExist = errors.New("key does not exist")
+
+type Generator interface {
 	io.Closer
-	Next() (int64, error)
-	NextN(int64) ([]int64, error)
-	Current() (int64, error)
+	EnableKeys([]string) error
+	Next(string) (int64, error)
+	Current(string) (int64, error)
 }

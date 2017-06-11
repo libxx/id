@@ -2,9 +2,7 @@ package server
 
 import (
 	"bufio"
-	"bytes"
 	"errors"
-	"net"
 	"strconv"
 )
 
@@ -12,17 +10,9 @@ type Request []string
 
 var errFormat = errors.New("invalid request format")
 
-func readRequest(conn net.Conn) (req Request, err error) {
-	reader := bufio.NewReader(conn)
-	totalArgLine, err := readLengthLine(reader)
-	if err != nil {
-		return
-	}
-	if !bytes.HasPrefix(totalArgLine, []byte{'*'}) {
-		err = errFormat
-		return
-	}
-	numArgs, err := strconv.Atoi(string(totalArgLine[1:]))
+func readRequest(reader *bufio.Reader) (req Request, err error) {
+	// parse command arguments count
+	numArgs, err := readArgumentNum(reader)
 	if err != nil {
 		return
 	}
@@ -30,37 +20,11 @@ func readRequest(conn net.Conn) (req Request, err error) {
 	req = make(Request, 0, numArgs)
 
 	for i := 0; i < numArgs; i++ {
-		var argLengthLine []byte
-		argLengthLine, err = readLengthLine(reader)
+		var arg []byte
+		arg, err = readArgument(reader)
 		if err != nil {
 			return
 		}
-		if !bytes.HasPrefix(argLengthLine, []byte{'$'}) {
-			err = errFormat
-			return
-		}
-		var argLength int
-		argLength, err = strconv.Atoi(string(argLengthLine[1:]))
-		if err != nil {
-			return
-		}
-
-		argLine := make([]byte, argLength+2)
-		var n int
-		n, err = reader.Read(argLine)
-		if err != nil {
-			return
-		}
-		if n != len(argLine) {
-			err = errFormat
-			return
-		}
-
-		if !bytes.HasSuffix(argLine, []byte{'\r', '\n'}) {
-			err = errors.New("invalid request")
-			return
-		}
-		arg := argLine[:len(argLine)-2]
 
 		req = append(req, string(arg))
 	}
@@ -68,22 +32,76 @@ func readRequest(conn net.Conn) (req Request, err error) {
 	return
 }
 
-func readLengthLine(reader *bufio.Reader) (bs []byte, err error) {
-	bs, err = reader.ReadSlice('\r')
+func readArgumentNum(reader *bufio.Reader) (n int, err error) {
+	body, err := readProtocolLine('*', reader)
 	if err != nil {
 		return
 	}
-	next, err := reader.ReadByte()
+	n, err = strconv.Atoi(string(body))
+	return
+}
+
+func readArgument(reader *bufio.Reader) (arg []byte, err error) {
+	body, err := readProtocolLine('$', reader)
 	if err != nil {
 		return
 	}
-	if next != '\n' {
+
+	argLength, err := strconv.Atoi(string(body))
+	if err != nil {
+		return
+	}
+
+	arg, err = readBytes(argLength, reader)
+	return
+}
+
+func readProtocolLine(prefix byte, reader *bufio.Reader) (body []byte, err error) {
+	p, err := reader.ReadByte()
+	if err != nil {
+		return
+	}
+	if p != prefix {
 		err = errFormat
 		return
 	}
-	bs = bs[:len(bs)-1]
-	if len(bs) < 2 {
+	content, err := reader.ReadBytes('\r')
+	if err != nil {
+		return
+	}
+	if len(content) == 1 {
 		err = errFormat
+		return
+	}
+	lf, err := reader.ReadByte()
+	if err != nil {
+		return
+	}
+	if lf != '\n' {
+		err = errFormat
+		return
+	}
+	body = make([]byte, len(content)-1)
+	copy(body, content)
+	return
+}
+
+func readBytes(length int, reader *bufio.Reader) (body []byte, err error) {
+	body = make([]byte, length)
+	i := 0
+	for i < length {
+		body[i], err = reader.ReadByte()
+		if err != nil {
+			return
+		}
+		i++
+	}
+
+	crlf := make([]byte, 2)
+	n, err := reader.Read(crlf)
+	if n != 2 || string(crlf) != "\r\n" {
+		err = errFormat
+		return
 	}
 	return
 }
