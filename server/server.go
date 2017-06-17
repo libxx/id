@@ -16,11 +16,13 @@ type DefaultServer struct {
 	engine   generator.Generator
 	listener net.Listener
 	logFunc  logging.LogFunc
+	timeout  time.Duration
 }
 
-func NewServer(engine generator.Generator, logFunc logging.LogFunc) *DefaultServer {
+func NewServer(engine generator.Generator, timeout time.Duration, logFunc logging.LogFunc) *DefaultServer {
 	s := new(DefaultServer)
 	s.engine = engine
+	s.timeout = timeout
 	s.logFunc = logging.NewWrapperLogFunc(logFunc)
 	return s
 }
@@ -52,7 +54,7 @@ func (s *DefaultServer) handleRequest(conn net.Conn) {
 	defer conn.Close()
 
 	for {
-		err := conn.SetDeadline(time.Now().Add(time.Second * 10))
+		err := conn.SetDeadline(time.Now().Add(s.timeout))
 		if err != nil {
 			return
 		}

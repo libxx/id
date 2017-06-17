@@ -4,7 +4,7 @@ import (
 	"testing"
 	"bufio"
 	"strings"
-	
+
 	"github.com/stretchr/testify/assert"
 )
 
