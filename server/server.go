@@ -27,13 +27,13 @@ func NewServer(engine generator.Generator, timeout time.Duration, logFunc loggin
 	return s
 }
 
-func (s *DefaultServer) Serve() error {
+func (s *DefaultServer) Serve(host string) error {
 	var err error
-	s.listener, err = net.Listen("tcp", ":8088")
+	s.listener, err = net.Listen("tcp", host)
 	if err != nil {
 		return err
 	}
-	s.logFunc("listen on :8088")
+	s.logFunc(fmt.Sprintf("listen on: %s.", host))
 	for {
 		var conn net.Conn
 		conn, err = s.listener.Accept()
@@ -45,12 +45,12 @@ func (s *DefaultServer) Serve() error {
 			}
 			return err
 		}
-		s.logFunc("accept new connection.")
-		go s.handleRequest(conn)
+		s.logFunc(fmt.Sprintf("accept new connection with remote: %s.", conn.RemoteAddr()))
+		go s.handle(conn)
 	}
 }
 
-func (s *DefaultServer) handleRequest(conn net.Conn) {
+func (s *DefaultServer) handle(conn net.Conn) {
 	defer conn.Close()
 
 	for {
@@ -74,39 +74,44 @@ func (s *DefaultServer) handleRequest(conn net.Conn) {
 			s.logFunc("req length is 0.")
 			return
 		}
-		var reply []byte
-		switch strings.ToUpper(string(req[0])) {
-		case "PING":
-			reply = NewStringReply("PONG")
-		case "INCR":
-			if len(req) != 2 {
-				reply = NewErrorReply("invalid arguments")
-			} else {
-				id, err := s.engine.Next(string(req[1]))
-				if err != nil {
-					reply = NewErrorReply(err.Error())
-				} else {
-					reply = NewIntegerReply(id)
-				}
-			}
-		case "GET":
-			if len(req) != 2 {
-				reply = NewErrorReply("invalid arguments")
-			} else {
-				id, err := s.engine.Current(string(req[1]))
-				if err != nil {
-					reply = NewErrorReply(err.Error())
-				} else {
-					reply = NewStringReply(strconv.FormatInt(id, 10))
-				}
-			}
-		default:
-			reply = NewErrorReply("unsupported method.")
-		}
+		reply := s.processRequest(req)
 		_, err = conn.Write(reply)
 		if err != nil {
 			s.logFunc(fmt.Sprintf("fail to write reply: %s", err.Error()))
 			return
 		}
 	}
+}
+
+func (s *DefaultServer) processRequest(req Request) []byte {
+	var reply []byte
+	switch strings.ToUpper(string(req[0])) {
+	case "PING":
+		reply = NewStringReply("PONG")
+	case "INCR":
+		if len(req) != 2 {
+			reply = NewErrorReply("invalid arguments")
+		} else {
+			id, err := s.engine.Next(string(req[1]))
+			if err != nil {
+				reply = NewErrorReply(err.Error())
+			} else {
+				reply = NewIntegerReply(id)
+			}
+		}
+	case "GET":
+		if len(req) != 2 {
+			reply = NewErrorReply("invalid arguments")
+		} else {
+			id, err := s.engine.Current(string(req[1]))
+			if err != nil {
+				reply = NewErrorReply(err.Error())
+			} else {
+				reply = NewStringReply(strconv.FormatInt(id, 10))
+			}
+		}
+	default:
+		reply = NewErrorReply("unsupported method.")
+	}
+	return reply
 }

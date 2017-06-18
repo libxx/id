@@ -1,12 +1,21 @@
 package hash
 
+import (
+	"errors"
+	"math"
+	"unicode/utf8"
+)
+
+var ErrInvalidHash = errors.New("invalid hash")
+
 type BaseEncoder struct {
-	chars  []byte
-	metric int64
+	chars    []rune
+	charsMap map[rune]int
+	metric   int64
 }
 
 func (e BaseEncoder) Encode(id int64) (string, error) {
-	encoded := make([]byte, 0, 16)
+	encoded := make([]rune, 0, 16)
 	for id >= e.metric {
 		encoded = append(encoded, e.chars[id%e.metric])
 		id = id / e.metric
@@ -16,26 +25,38 @@ func (e BaseEncoder) Encode(id int64) (string, error) {
 	return string(encoded), nil
 }
 
+func (e BaseEncoder) Decode(hash string) (id int64, err error) {
+	cnt := utf8.RuneCountInString(hash)
+	for k, v := range []rune(hash) {
+		index, exist := e.charsMap[v]
+		if !exist {
+			return 0, ErrInvalidHash
+		}
+		id += int64(index * int(math.Pow(float64(len(e.chars)), float64(cnt-k-1))))
+	}
+	return id, nil
+}
+
 func NewBaseEncoder(charStr string) Encoder {
 	encoder := new(BaseEncoder)
-	encoder.chars = uniqueChars([]byte(charStr))
+	encoder.chars, encoder.charsMap = uniqueChars([]rune(charStr))
 	encoder.metric = int64(len(encoder.chars))
 	return *encoder
 }
 
-func uniqueChars(chars []byte) []byte {
-	uniqMap := make(map[byte]struct{}, len(chars))
-	uniq := make([]byte, 0, len(chars))
+func uniqueChars(chars []rune) ([]rune, map[rune]int) {
+	uniqMap := make(map[rune]int, len(chars))
+	uniq := make([]rune, 0, len(chars))
 	for _, char := range chars {
 		if _, exist := uniqMap[char]; !exist {
-			uniqMap[char] = struct{}{}
+			uniqMap[char] = len(uniqMap)
 			uniq = append(uniq, char)
 		}
 	}
-	return uniq[:len(uniqMap)]
+	return uniq[:len(uniqMap)], uniqMap
 }
 
-func reverseChars(chars []byte) {
+func reverseChars(chars []rune) {
 	length := len(chars)
 	bound := length / 2
 	for i := 0; i < bound; i++ {
