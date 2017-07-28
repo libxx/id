@@ -172,7 +172,7 @@ func (m *mysqlRowBasedEngine) increase(delta int64) (cur, max int64, err error) 
 	m.logFunc(fmt.Sprintf("before increasing counter for key: \"%s\", current: %d.", m.key, m.cur))
 	defer func() {
 		if err == nil {
-			m.logFunc(fmt.Sprintf("after increasing counter for key: \"%s\", current: %d.", m.key, cur))
+			m.logFunc(fmt.Sprintf("after increasing counter for key: \"%s\", max: %d.", m.key, max))
 		}
 	}()
 	tx, err := m.generator.db.Begin()
